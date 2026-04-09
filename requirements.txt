@@ -1,0 +1,5 @@
+streamlit==1.36.0
+rdkit-pypi==2023.9.6
+pandas==2.2.2
+Pillow==10.4.0
+pyinstaller==6.5.0
