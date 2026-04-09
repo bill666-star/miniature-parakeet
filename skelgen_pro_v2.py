@@ -6,30 +6,31 @@ from rdkit.Chem import FilterCatalog
 from rdkit.Chem.rdmolfiles import MolToMolBlock
 import pandas as pd
 
+# --------------------------
+# 页面配置（极简稳定）
+# --------------------------
 st.set_page_config(
-    page_title="SkelGen-Pro v2.0 | 骨架保序分子生成器",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="SkelGen-Pro 骨架保序分子生成器",
+    layout="wide"
 )
 
-st.markdown("""
-<style>
-.block-container { padding-top: 2rem; }
-.stButton>button { background-color: #28a745; color: white; font-size: 16px; height: 3em; width: 100%; }
-</style>
-""", unsafe_allow_html=True)
+st.title("🧬 SkelGen-Pro — 骨架锁定·极小扰动药物分子生成")
+st.markdown("### 不改变母核骨架 | 生物等排体 | 去PAINS | 成药性过滤 | 对接专用库")
 
-st.title("🧬 SkelGen-Pro v2.0 — 骨架锁定·极小扰动药物分子生成")
-st.markdown("#### 不改变母核骨架 | 生物等排体 | 去PAINS | 成药性过滤 | 对接专用分子库")
-
+# --------------------------
+# PAINS 过滤器
+# --------------------------
 @st.cache_resource
-def load_pains_filter():
+def load_pains():
     params = FilterCatalog.FilterCatalogParams()
     params.AddCatalog(FilterCatalog.FilterCatalogs.PAINS)
     return FilterCatalog.FilterCatalog(params)
 
-pains_filter = load_pains_filter()
+pains = load_pains()
 
+# --------------------------
+# 生物等排体替换规则
+# --------------------------
 ISO_RULES = [
     ("[H]", ["F", "Cl"]),
     ("[F]", ["H", "Cl", "CN"]),
@@ -38,10 +39,12 @@ ISO_RULES = [
     ("[OH]", ["OCH3", "F"]),
     ("[NH2]", ["OH", "CH3"]),
     ("C(=O)O", ["c1n[nH]nn1", "S(=O)(=O)N"]),
-    ("c1ccccc1", ["c1ccncc1", "c1cccnc1"]),
-    ("C=O", ["S=O"]),
+    ("c1ccccc1", ["c1ccncc1"]),
 ]
 
+# --------------------------
+# 分子属性计算
+# --------------------------
 def calc_props(mol):
     return {
         "MW": round(Descriptors.MolWt(mol), 2),
@@ -49,27 +52,27 @@ def calc_props(mol):
         "TPSA": round(rdMolDescriptors.CalcTPSA(mol), 2),
         "HBA": rdMolDescriptors.CalcNumHBA(mol),
         "HBD": rdMolDescriptors.CalcNumHBD(mol),
-        "RotB": rdMolDescriptors.CalcNumRotatableBonds(mol),
     }
 
-def has_pains(mol):
-    return pains_filter.HasMatch(mol)
-
-def passed_filter(new_mol, orig_props, cfg):
-    p = calc_props(new_mol)
-    if abs(p["MW"] - orig_props["MW"]) > cfg["mw"]: return False
-    if abs(p["LogP"] - orig_props["LogP"]) > cfg["logp"]: return False
-    if abs(p["TPSA"] - orig_props["TPSA"]) > cfg["tpsa"]: return False
-    if abs(p["HBA"] - orig_props["HBA"]) > cfg["hba"]: return False
-    if abs(p["HBD"] - orig_props["HBD"]) > cfg["hbd"]: return False
+# --------------------------
+# 过滤规则
+# --------------------------
+def is_valid(mol, orig, cfg):
+    p = calc_props(mol)
+    if abs(p["MW"]-orig["MW"]) > cfg["mw"]: return False
+    if abs(p["LogP"]-orig["LogP"]) > cfg["logp"]: return False
+    if abs(p["TPSA"]-orig["TPSA"]) > cfg["tpsa"]: return False
+    if abs(p["HBA"]-orig["HBA"]) > cfg["hba"]: return False
+    if abs(p["HBD"]-orig["HBD"]) > cfg["hbd"]: return False
     if p["MW"] > 550: return False
     if p["LogP"] > 5: return False
-    if p["HBD"] > 5: return False
-    if p["HBA"] > 10: return False
-    if has_pains(new_mol): return False
+    if pains.HasMatch(mol): return False
     return True
 
-def replace_bioiso(mol):
+# --------------------------
+# 等排体替换（骨架锁定）
+# --------------------------
+def bioiso(mol):
     m = Chem.Mol(mol)
     try:
         rule = random.choice(ISO_RULES)
@@ -77,86 +80,82 @@ def replace_bioiso(mol):
         repl = Chem.MolFromSmarts(random.choice(rule[1:]))
         if patt and repl:
             res = Chem.ReplaceSubstructs(m, patt, repl, replaceAll=False)
-            if res and res[0]:
-                return res[0]
+            return res[0] if res else m
     except:
-        pass
+        return m
     return m
 
-def generate_library(smi, count, cfg):
+# --------------------------
+# 生成分子库
+# --------------------------
+def generate(smi, count, cfg):
     mol = Chem.MolFromSmiles(smi)
     if not mol: return [], {}, None
-    orig_props = calc_props(mol)
+    orig = calc_props(mol)
     valid = []
     seen = set()
-    for _ in range(count * 15):
-        cand = replace_bioiso(mol)
+    for _ in range(count*15):
+        cand = bioiso(mol)
         if not cand: continue
-        if not passed_filter(cand, orig_props, cfg): continue
+        if not is_valid(cand, orig, cfg): continue
         s = Chem.MolToSmiles(cand)
         if s in seen or s == smi: continue
         seen.add(s)
         valid.append((s, calc_props(cand), cand))
-        if len(valid) >= count: break
-    return valid, orig_props, mol
+        if len(valid)>=count: break
+    return valid, orig, mol
 
+# --------------------------
+# 侧边栏输入
+# --------------------------
 with st.sidebar:
     st.subheader("📥 输入分子")
-    input_smi = st.text_input("SMILES", "c1cc(OC)ccc1C")
-    gen_count = st.number_input("生成数量", 10, 500, 30)
+    smi = st.text_input("SMILES", "c1cc(OC)ccc1C")
+    count = st.number_input("生成数量",10,500,30)
 
-    st.subheader("⚙️ 性质不突变约束")
-    mw_tol = st.slider("分子量波动 ±", 0, 60, 25)
-    logp_tol = st.slider("LogP 波动 ±", 0.0, 2.0, 1.0, 0.1)
-    tpsa_tol = st.slider("TPSA波动 ±", 0, 40, 15)
-    hba_tol = st.slider("HBA波动 ±", 0, 2, 1)
-    hbd_tol = st.slider("HBD波动 ±", 0, 2, 1)
-
-    config = {
-        "mw": mw_tol,
-        "logp": logp_tol,
-        "tpsa": tpsa_tol,
-        "hba": hba_tol,
-        "hbd": hbd_tol
+    st.subheader("⚙️ 性质约束")
+    cfg = {
+        "mw": st.slider("MW ±",0,60,25),
+        "logp": st.slider("LogP ±",0.0,2.0,1.0,0.1),
+        "tpsa": st.slider("TPSA ±",0,40,15),
+        "hba": st.slider("HBA ±",0,2,1),
+        "hbd": st.slider("HBD ±",0,2,1),
     }
 
-start = st.button("🚀 生成骨架保序分子库", use_container_width=True)
-
-if start:
-    with st.spinner("生成中 · 骨架锁定 · 等排体替换 · PAINS过滤 · 成药性校验"):
-        mols, orig_props, orig_mol = generate_library(input_smi, gen_count, config)
+# --------------------------
+# 一键生成
+# --------------------------
+if st.button("🚀 生成骨架保序分子库", use_container_width=True):
+    with st.spinner("生成中... 骨架锁定 | 等排体 | PAINS过滤 | 成药性"):
+        mols, orig_props, orig_mol = generate(smi, count, cfg)
 
     if not mols:
-        st.error("无法生成符合条件的分子，请放宽约束或检查SMILES")
+        st.error("无法生成符合条件的分子，请放宽参数")
     else:
         st.success(f"✅ 生成 {len(mols)} 个高质量分子")
 
+        # 输出表格
         rows = []
-        sdf = ""
-        for i, (smi, prop, mol_obj) in enumerate(mols, 1):
+        sdf_content = ""
+        for i,(s,p,mol_obj) in enumerate(mols,1):
             rows.append({
-                "ID": f"SKEL-{i:03d}",
-                "SMILES": smi,
-                "MW": prop["MW"],
-                "LogP": prop["LogP"],
-                "TPSA": prop["TPSA"],
-                "HBA": prop["HBA"],
-                "HBD": prop["HBD"]
+                "ID":f"SKEL-{i:03d}",
+                "SMILES":s,
+                "MW":p["MW"],
+                "LogP":p["LogP"],
+                "TPSA":p["TPSA"],
+                "HBA":p["HBA"],
+                "HBD":p["HBD"]
             })
-            sdf += MolToMolBlock(mol_obj) + "$$$$\n"
+            sdf_content += MolToMolBlock(mol_obj)+"$$$$\n"
 
         df = pd.DataFrame(rows)
-        st.subheader("📊 生成分子库")
         st.dataframe(df, use_container_width=True, height=400)
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.download_button("💾 导出CSV", df.to_csv(index=False), "SkelGen分子库.csv")
-        with c2:
-            st.download_button("📥 导出SDF(对接专用)", sdf, "SkelGen分子库.sdf")
+        # 导出
+        col1,col2 = st.columns(2)
+        col1.download_button("💾 导出CSV", df.to_csv(index=False), "SkelGen库.csv")
+        col2.download_button("📥 导出SDF(对接专用)", sdf_content, "SkelGen库.sdf")
 
 st.markdown("---")
-st.markdown("""
-**SkelGen-Pro v2.0 | 完全免费开源 | MIT协议**
-适用：分子对接、虚拟筛选、me-too药物设计、骨架保持结构优化
-""")
+st.markdown("✅ 骨架完全不变 | ✅ 生物等排体 | ✅ 去PAINS | ✅ 成药性过滤 | 开源免费")
