@@ -2,11 +2,9 @@ import streamlit as st
 import random
 from rdkit import Chem
 from rdkit.Chem import Descriptors, rdMolDescriptors
-from rdkit.Chem import FilterCatalog, Draw
+from rdkit.Chem import FilterCatalog
 from rdkit.Chem.rdmolfiles import MolToMolBlock
-from io import BytesIO, StringIO
 import pandas as pd
-import base64
 
 st.set_page_config(
     page_title="SkelGen-Pro v2.0 | 骨架保序分子生成器",
@@ -14,32 +12,24 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 顶部样式
 st.markdown("""
 <style>
 .block-container { padding-top: 2rem; }
-.stButton>button { background-color: #4CAF50; color: white; font-size: 16px; height: 3em; width: 100%; }
-.stDownloadButton>button { background-color: #2196F3; color: white; }
+.stButton>button { background-color: #28a745; color: white; font-size: 16px; height: 3em; width: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🧬 SkelGen-Pro v2.0 — 骨架锁定·极小扰动药物分子生成")
 st.markdown("#### 不改变母核骨架 | 生物等排体 | 去PAINS | 成药性过滤 | 对接专用分子库")
 
-# ======================
-# 缓存过滤器
-# ======================
 @st.cache_resource
 def load_pains_filter():
-    params = FilterCatalogParams()
-    params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
+    params = FilterCatalog.FilterCatalogParams()
+    params.AddCatalog(FilterCatalog.FilterCatalogs.PAINS)
     return FilterCatalog.FilterCatalog(params)
 
 pains_filter = load_pains_filter()
 
-# ======================
-# 生物等排体替换库（专业级）
-# ======================
 ISO_RULES = [
     ("[H]", ["F", "Cl"]),
     ("[F]", ["H", "Cl", "CN"]),
@@ -52,20 +42,6 @@ ISO_RULES = [
     ("C=O", ["S=O"]),
 ]
 
-# ======================
-# 分子绘图
-# ======================
-def mol_to_image(mol, w=400, h=200):
-    if mol is None:
-        return None
-    pil_img = Draw.MolToImage(mol, size=(w, h), kekulize=True)
-    buf = BytesIO()
-    pil_img.save(buf, format='PNG')
-    return base64.b64encode(buf.getvalue()).decode()
-
-# ======================
-# 属性计算
-# ======================
 def calc_props(mol):
     return {
         "MW": round(Descriptors.MolWt(mol), 2),
@@ -76,15 +52,9 @@ def calc_props(mol):
         "RotB": rdMolDescriptors.CalcNumRotatableBonds(mol),
     }
 
-# ======================
-# PAINS 检测
-# ======================
 def has_pains(mol):
     return pains_filter.HasMatch(mol)
 
-# ======================
-# 成药性 + 不突变约束
-# ======================
 def passed_filter(new_mol, orig_props, cfg):
     p = calc_props(new_mol)
     if abs(p["MW"] - orig_props["MW"]) > cfg["mw"]: return False
@@ -99,9 +69,6 @@ def passed_filter(new_mol, orig_props, cfg):
     if has_pains(new_mol): return False
     return True
 
-# ======================
-# 骨架保序等排体替换
-# ======================
 def replace_bioiso(mol):
     m = Chem.Mol(mol)
     try:
@@ -116,9 +83,6 @@ def replace_bioiso(mol):
         pass
     return m
 
-# ======================
-# 批量生成
-# ======================
 def generate_library(smi, count, cfg):
     mol = Chem.MolFromSmiles(smi)
     if not mol: return [], {}, None
@@ -136,9 +100,6 @@ def generate_library(smi, count, cfg):
         if len(valid) >= count: break
     return valid, orig_props, mol
 
-# ======================================
-# 侧边栏：输入与参数
-# ======================================
 with st.sidebar:
     st.subheader("📥 输入分子")
     input_smi = st.text_input("SMILES", "c1cc(OC)ccc1C")
@@ -159,10 +120,6 @@ with st.sidebar:
         "hbd": hbd_tol
     }
 
-# ======================================
-# 主区域：分子预览 + 结果
-# ======================================
-col_input, col_params = st.columns([1, 1])
 start = st.button("🚀 生成骨架保序分子库", use_container_width=True)
 
 if start:
@@ -174,15 +131,6 @@ if start:
     else:
         st.success(f"✅ 生成 {len(mols)} 个高质量分子")
 
-        # 原图预览
-        with col_input:
-            st.markdown("#### 原始分子结构")
-            img = mol_to_image(orig_mol)
-            if img:
-                st.markdown(f'<img src="data:image/png;base64,{img}">', unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame([orig_props]), use_container_width=True)
-
-        # 表格
         rows = []
         sdf = ""
         for i, (smi, prop, mol_obj) in enumerate(mols, 1):
@@ -201,17 +149,6 @@ if start:
         st.subheader("📊 生成分子库")
         st.dataframe(df, use_container_width=True, height=400)
 
-        # 预览前8个分子
-        st.subheader("🖼️ 分子结构预览")
-        preview = mols[:8]
-        cols = st.columns(4)
-        for i, (smi, prop, mol) in enumerate(preview):
-            with cols[i % 4]:
-                img = mol_to_image(mol, w=220, h=120)
-                st.markdown(f"**SKEL-{i+1:03d}**")
-                st.markdown(f'<img src="data:image/png;base64,{img}">', unsafe_allow_html=True)
-
-        # 导出
         c1, c2 = st.columns(2)
         with c1:
             st.download_button("💾 导出CSV", df.to_csv(index=False), "SkelGen分子库.csv")
